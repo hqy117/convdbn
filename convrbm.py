@@ -24,13 +24,13 @@ class ConvRBM():
         self.use_cuda = use_cuda
         self.input_channels = input_channels
 
-        # Sparsity regularization parameters (following MATLAB demo_cdbn.m)
-        self.pbias = pbias  # Target sparsity level (e.g., 0.002 for layer 1, 0.003 for layer 2)
-        self.plambda = plambda  # Sparsity penalty weight (e.g., 5.0)
-        self.eta_sparsity = eta_sparsity  # Sparsity learning rate (e.g., 0.01 for layer 2, 0.0 for layer 1)
+        # Sparsity regularization parameters
+        self.pbias = pbias  # Target sparsity level
+        self.plambda = plambda  # Sparsity penalty weight
+        self.eta_sparsity = eta_sparsity  # Sparsity learning rate
 
-        # Sigma parameters (following MATLAB demo_cdbn.m)
-        self.sigma = sigma  # Current sigma value (e.g., 0.2)
+        # Sigma parameters
+        self.sigma = sigma  # Current sigma value
         self.sigma_stop = sigma_stop if sigma_stop is not None else sigma / 2  # Stop value for sigma decay
         self.sigma_schedule = sigma_schedule  # Whether to use sigma scheduling
 
@@ -98,15 +98,15 @@ class ConvRBM():
             torch.backends.cudnn.benchmark = True
 
     def sample_hidden(self, visible_probabilities):
-        """Sample hidden units from visible units using MATLAB-style multinomial pooling with sigma scaling"""
-        # Step 1: Convolution + bias
+        """Sample hidden units from visible units using multinomial pooling with sigma scaling"""
+        # Convolution + bias
         conv_out = F.conv2d(visible_probabilities, weight=self.conv1_weights, bias=self.conv1_hidden_bias)
 
-        # Step 2: Apply sigma scaling (following MATLAB: hidprobs = 1/(sigma^2) * hidprobs)
+        # Apply sigma scaling
         conv_out = conv_out / (self.sigma ** 2)
-        conv_out = torch.sigmoid(conv_out)  # [batch, 16, 29, 29]
+        conv_out = torch.sigmoid(conv_out)
 
-        # Step 3: Multinomial probabilistic pooling
+        # Multinomial probabilistic pooling
         sparse_detection, pooled_map, winner_info = self.multinomial_pool(conv_out)
 
         # Step 4: Store information for unpooling
@@ -120,11 +120,11 @@ class ConvRBM():
         # Step 1: Sparse unpooling to restore detection map
         sparse_detection = self.sparse_unpool(hidden_probabilities, self.stored_winner_info)
 
-        # Step 2: Transpose convolution (like MATLAB's conv2(..., 'full'))
+        # Transpose convolution
         visible_recon = F.conv_transpose2d(sparse_detection, weight=self.conv1_weights,
                                          bias=self.conv1_visible_bias, stride=1, padding=0)
 
-        # Step 3: Apply sigma scaling (following MATLAB crbm_reconstruct.m line 19&32)
+        # Apply sigma scaling
         visible_recon = visible_recon / (self.sigma ** 2)
         visible_recon = torch.sigmoid(visible_recon)
 
@@ -155,7 +155,7 @@ class ConvRBM():
             if self.use_cuda:
                 torch.cuda.synchronize()
 
-        # === POSITIVE PHASE ===
+        # Positive phase
         if profile:
             pos_start = time.time()
             if self.use_cuda:
@@ -164,9 +164,9 @@ class ConvRBM():
         # Forward pass and store intermediate activations for correlation
         conv_pos = F.conv2d(input_data, weight=self.conv1_weights, bias=self.conv1_hidden_bias)
 
-        # Apply sigma scaling (following MATLAB implementation)
+        # Apply sigma scaling
         conv_pos_scaled = conv_pos / (self.sigma ** 2)
-        conv_pos_sigmoid = torch.sigmoid(conv_pos_scaled)  # [batch, 16, 29, 29] - PRE-POOLING activations
+        conv_pos_sigmoid = torch.sigmoid(conv_pos_scaled)
 
         if profile:
             conv_time = time.time()
@@ -186,7 +186,7 @@ class ConvRBM():
         # Sample hidden states from pooled probabilities
         pos_hidden_states = torch.bernoulli(pooled_pos)  # [batch, 16, 14, 14]
 
-        # === NEGATIVE PHASE (CD-k) ===
+        # Negative phase (CD-k)
         if profile:
             neg_start = time.time()
             if self.use_cuda:
@@ -270,7 +270,7 @@ class ConvRBM():
         conv_neg_scaled = conv_neg / (self.sigma ** 2)
         conv_neg_sigmoid = torch.sigmoid(conv_neg_scaled)
 
-        # === GRADIENT COMPUTATION (The key fix!) ===
+        # Gradient computation
         if profile:
             grad_start = time.time()
             if self.use_cuda:
@@ -295,7 +295,7 @@ class ConvRBM():
                     torch.cuda.synchronize()
                 profile_info['gradient_computation'] = corr_time - grad_start
 
-            # === SPARSITY REGULARIZATION (following MATLAB fobj_sparsity.m) ===
+            # Sparsity regularization
             if profile:
                 sparsity_start = time.time()
                 if self.use_cuda:
@@ -327,7 +327,7 @@ class ConvRBM():
                     torch.cuda.synchronize()
                 profile_info['sparsity_regularization'] = sparsity_time - sparsity_start
 
-            # === PARAMETER UPDATES ===
+            # Parameter updates
             if profile:
                 update_start = time.time()
                 if self.use_cuda:
@@ -354,9 +354,9 @@ class ConvRBM():
         # Calculate reconstruction error
         error = compute_reconstruction_error(input_data, neg_visible_probs)
 
-        # === SIGMA SCHEDULING (following MATLAB crbm_train.m) ===
+        # Sigma scheduling
         if self.sigma_schedule and self.sigma > self.sigma_stop:
-            # Decay sigma by 0.99 each step (following MATLAB: params.sigma = params.sigma*0.99)
+            # Decay sigma by 0.99 each step
             self.sigma = self.sigma * 0.99
 
         if profile:

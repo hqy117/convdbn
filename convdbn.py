@@ -6,7 +6,7 @@ from pooling import MultinomialMaxPool2d, SparseUnpool2d
 from utils import compute_correlation, compute_bias_gradients, update_parameters_with_momentum
 
 class ConvRBMLayer(nn.Module):
-    """Single layer Convolutional RBM with proper MultinomialMaxPool2d"""
+    """Single layer Convolutional RBM with MultinomialMaxPool2d"""
 
     def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0,
                  k=2, learning_rate=1e-3, momentum_coefficient=0.5, weight_decay=1e-4, use_cuda=False,
@@ -25,7 +25,7 @@ class ConvRBMLayer(nn.Module):
         self.weight_decay = weight_decay
         self.use_cuda = use_cuda
 
-        # Sparsity and sigma parameters (following MATLAB demo_cdbn.m)
+        # Sparsity and sigma parameters
         self.spacing = spacing
         self.pbias = pbias
         self.plambda = plambda
@@ -45,7 +45,7 @@ class ConvRBMLayer(nn.Module):
         self.visible_bias_momentum = torch.zeros_like(self.visible_bias)
         self.hidden_bias_momentum = torch.zeros_like(self.hidden_bias)
 
-        # Pooling layers (following MATLAB ConvRBM implementation)
+        # Pooling layers
         self.multinomial_pool = MultinomialMaxPool2d(spacing=spacing)
         self.sparse_unpool = SparseUnpool2d(spacing=spacing)
         self.stored_winner_info = None
@@ -69,34 +69,34 @@ class ConvRBMLayer(nn.Module):
             torch.backends.cudnn.benchmark = True
 
     def sample_hidden(self, visible):
-        """Sample hidden units from visible units with proper MultinomialMaxPool2d"""
-        # Step 1: Convolution
+        """Sample hidden units from visible units with MultinomialMaxPool2d"""
+        # Convolution
         hidden_pre = F.conv2d(visible, self.conv_weights, bias=self.hidden_bias,
                              stride=self.stride, padding=self.padding)
 
-        # Step 2: Apply sigma scaling (following MATLAB implementation)
+        # Apply sigma scaling
         hidden_pre_scaled = hidden_pre / (self.sigma ** 2)
         hidden_prob = torch.sigmoid(hidden_pre_scaled)
 
-        # Step 3: MultinomialMaxPool2d (the key missing component!)
+        # MultinomialMaxPool2d
         sparse_detection, pooled_map, winner_info = self.multinomial_pool(hidden_prob)
 
         # Store winner info for reconstruction
         self.stored_winner_info = winner_info
 
-        # Return pooled map (this is what gets passed to next layer)
+        # Return pooled map
         return pooled_map
 
     def sample_visible(self, hidden, output_size=None):
         """Sample visible units from hidden units using sparse unpooling"""
-        # Step 1: Sparse unpooling to restore detection map
+        # Sparse unpooling to restore detection map
         sparse_detection = self.sparse_unpool(hidden, self.stored_winner_info)
 
-        # Step 2: Transpose convolution (like MATLAB's conv2(..., 'full'))
+        # Transpose convolution
         visible_recon = F.conv_transpose2d(sparse_detection, weight=self.conv_weights,
                                          bias=self.visible_bias, stride=self.stride, padding=self.padding)
 
-        # Step 3: Apply sigma scaling (following MATLAB crbm_reconstruct.m line 19&32)
+        # Apply sigma scaling
         visible_recon = visible_recon / (self.sigma ** 2)
         visible_recon = torch.sigmoid(visible_recon)
 

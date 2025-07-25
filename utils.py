@@ -1,6 +1,5 @@
 """
 Utility Functions for ConvRBM Training
-=====================================
 
 This module contains helper functions for contrastive divergence training,
 correlation computation, and other utilities needed for ConvRBM.
@@ -16,8 +15,8 @@ def compute_correlation(visible_data, hidden_activations, kernel_size):
     Compute correlation between visible data and hidden activations.
 
     This is the key function for contrastive divergence - it computes the
-    correlation that will be used for weight updates. Following MATLAB approach,
-    we use the pre-pooling hidden activations for correlation computation.
+    correlation that will be used for weight updates. We use the pre-pooling
+    hidden activations for correlation computation.
 
     Args:
         visible_data: [batch, in_channels, height, width] - visible layer data

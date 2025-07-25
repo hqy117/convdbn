@@ -129,12 +129,12 @@ print(f'MultinomialMaxPool2d: {convrbm.pool_kernel}×{convrbm.pool_kernel} regio
 print(f'  → Detection map: [batch_size, {convrbm.num_filters}, {conv_out_dim}, {conv_out_dim}] (sparse)')
 print(f'  → Pooled features: [batch_size, {convrbm.num_filters}, {pool_out_dim}, {pool_out_dim}] (aggregated)')
 print('  ↓')
-print(f'=== Hidden Features: {hidden_features} pooled + {convrbm.num_filters * conv_out_dim * conv_out_dim} sparse dimensions ===')
-print('  ↓')
+print(f'Hidden Features: {hidden_features} pooled + {convrbm.num_filters * conv_out_dim * conv_out_dim} sparse dimensions')
+print('  |')
 print(f'SparseUnpool2d: Pattern restoration using stored sparse detection maps')
-print(f'  → Output: [batch_size, {convrbm.num_filters}, {conv_out_dim}, {conv_out_dim}]')
-print('  ↓')
-print(f'ConvTranspose2d: {convrbm.num_filters}→{INPUT_CHANNELS} channels, {convrbm.conv_kernel}×{convrbm.conv_kernel} kernel, stride=1, padding=0')
+print(f'  -> Output: [batch_size, {convrbm.num_filters}, {conv_out_dim}, {conv_out_dim}]')
+print('  |')
+print(f'ConvTranspose2d: {convrbm.num_filters}->{INPUT_CHANNELS} channels, {convrbm.conv_kernel}x{convrbm.conv_kernel} kernel, stride=1, padding=0')
 print(f'  → Output: [batch_size, {INPUT_CHANNELS}, {INPUT_DIM}, {INPUT_DIM}]')
 print('  ↓')
 print('Sigmoid activation')
@@ -297,7 +297,7 @@ for epoch in range(EPOCHS):
 
                 # Print detailed timing information
                 total_time = profile_info['total_time']
-                print(f"\n=== BATCH {count} PERFORMANCE PROFILE ===")
+                print(f"\nBATCH {count} PERFORMANCE PROFILE")
                 print(f"Total Time: {total_time:.3f}s")
                 print(f"  Positive Phase:")
                 print(f"    - Convolution: {profile_info['positive_conv']:.3f}s ({profile_info['positive_conv']/total_time*100:.1f}%)")
@@ -311,7 +311,7 @@ for epoch in range(EPOCHS):
                 print(f"  Sparsity Regularization: {profile_info['sparsity_regularization']:.3f}s ({profile_info['sparsity_regularization']/total_time*100:.1f}%)")
                 print(f"  Parameter Updates: {profile_info['parameter_updates']:.3f}s ({profile_info['parameter_updates']/total_time*100:.1f}%)")
                 print(f"  Batch Size: {batch.shape[0]}, Error: {batch_error:.4f}")
-                print("=" * 60)
+                print("-" * 50)
             else:
                 batch_error = convrbm.contrastive_divergence(batch)
 
@@ -356,11 +356,11 @@ if args.eval_train:
     print(f'Final Train Accuracy: {train_accuracy:.4f} ({int(train_accuracy*n_train_samples)}/{n_train_samples}) on {n_train_samples} train samples')
     print(f'Final Overfitting Gap: {train_accuracy - test_accuracy:.4f} (Train - Test)')
     if train_accuracy - test_accuracy > 0.1:
-        print('⚠️  WARNING: Significant overfitting detected (gap > 0.1)')
+        print('WARNING: Significant overfitting detected (gap > 0.1)')
     elif train_accuracy - test_accuracy > 0.05:
-        print('⚠️  CAUTION: Moderate overfitting detected (gap > 0.05)')
+        print('CAUTION: Moderate overfitting detected (gap > 0.05)')
     else:
-        print('✅ Good generalization (gap <= 0.05)')
+        print('Good generalization (gap <= 0.05)')
 else:
     test_accuracy, n_test_samples = evaluate_model(convrbm, train_loader, test_loader)
     print(f'Final Test Accuracy: {test_accuracy:.4f} ({int(test_accuracy*n_test_samples)}/{n_test_samples}) on {n_test_samples} test samples')

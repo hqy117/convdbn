@@ -1,13 +1,13 @@
 """
-Probabilistic Max-Pooling Implementation Following MATLAB ConvRBM
-================================================================
+Probabilistic Max-Pooling Implementation
+========================================
 
 This module implements the multinomial probabilistic max-pooling as described
-in the original ConvDBN paper and implemented in the MATLAB code.
+in the original ConvDBN paper.
 
 Key concepts:
-1. Detection Layer (h): Sparse representation at full resolution [29,29,16]
-2. Pooling Layer (p): Aggregated representation [14,14,16]
+1. Detection Layer (h): Sparse representation at full resolution
+2. Pooling Layer (p): Aggregated representation
 3. Multinomial sampling within each pooling region
 4. No explicit unpooling - use stored sparse patterns
 """
@@ -20,17 +20,14 @@ import numpy as np
 
 class MultinomialMaxPool2d(nn.Module):
     """
-    Multinomial Probabilistic Max-Pooling following MATLAB implementation.
+    Multinomial Probabilistic Max-Pooling.
 
-    This implements the pooling strategy from the original ConvDBN MATLAB code:
+    This implements the pooling strategy from the original ConvDBN paper:
     1. Divide feature map into non-overlapping regions (e.g., 2x2)
     2. For each region, create multinomial vector [a1, a2, a3, a4, 0]
     3. Apply softmax and sample exactly one winner (or none)
     4. Create sparse detection map with winners
     5. Aggregate sparse regions to create pooled map
-
-    The implementation preserves the exact algorithm from MATLAB sample_multrand.m
-    while using optimized PyTorch operations for better performance.
     """
 
     def __init__(self, spacing=2):
@@ -39,9 +36,9 @@ class MultinomialMaxPool2d(nn.Module):
         
     def forward(self, hidden_activations):
         """
-        Optimized multinomial pooling following MATLAB logic exactly.
+        Multinomial pooling with exact algorithm implementation.
 
-        This preserves the exact algorithm from MATLAB sample_multrand.m:
+        Steps:
         1. Extract regions and create multinomial vectors [a1, a2, ..., 0]
         2. Apply softmax with numerical stability
         3. Perform multinomial sampling (one winner per region or none)
@@ -68,24 +65,22 @@ class MultinomialMaxPool2d(nn.Module):
 
         num_regions = pool_height * pool_width
 
-        # Add "no winner" option (following MATLAB: poshidprobs_mult(end,:) = 0)
+        # Add "no winner" option
         no_winner = torch.zeros(batch, channels, num_regions, 1, device=device, dtype=regions.dtype)
         regions_with_null = torch.cat([regions, no_winner], dim=-1)
         # Shape: [batch, channels, num_regions, spacing²+1]
 
-        # Numerical stability (following MATLAB: subtract max)
+        # Numerical stability (subtract max)
         max_vals = torch.max(regions_with_null, dim=-1, keepdim=True)[0]
         stabilized = regions_with_null - max_vals
 
-        # Apply softmax (following MATLAB: exp(values))
+        # Apply softmax
         probs = F.softmax(stabilized, dim=-1)
 
-        # Optimized multinomial sampling using Gumbel-Max trick
-        # This is much faster than torch.multinomial for large batches
+        # Multinomial sampling using Gumbel-Max trick
         probs_flat = probs.view(-1, spacing*spacing + 1)
 
         # Gumbel-Max trick for efficient multinomial sampling
-        # This preserves the stochastic behavior while being much faster
         gumbel_noise = -torch.log(-torch.log(torch.rand_like(probs_flat) + 1e-8) + 1e-8)
         winner_indices = torch.argmax(torch.log(probs_flat + 1e-8) + gumbel_noise, dim=-1)
 

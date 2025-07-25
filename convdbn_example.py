@@ -7,7 +7,7 @@ from convdbn import ConvDBN
 from tqdm import tqdm
 import argparse
 
-########## COMMAND LINE ARGUMENTS ##########
+# Command line arguments
 parser = argparse.ArgumentParser(description='ConvDBN Training')
 parser.add_argument('--dataset', type=str, default='mnist', choices=['mnist', 'cifar10'],
                     help='Dataset to use: mnist or cifar10 (default: mnist)')
@@ -23,7 +23,7 @@ parser.add_argument('--eval-train', action='store_true',
                     help='Also evaluate accuracy on training set to check for overfitting')
 args = parser.parse_args()
 
-########## RANDOM SEED SETUP ##########
+# Random seed setup
 import random
 SEED = args.seed
 print(f'Setting random seed to: {SEED}')
@@ -35,11 +35,11 @@ torch.manual_seed(SEED)
 torch.cuda.manual_seed(SEED)
 torch.cuda.manual_seed_all(SEED)
 
-# Make PyTorch deterministic (may reduce performance)
+# Make PyTorch deterministic
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 
-########## CONFIGURATION ##########
+# Configuration
 # Dataset selection from command line
 DATASET = args.dataset
 NUM_LAYERS = args.layers
@@ -103,38 +103,37 @@ if args.subset_size is not None:
 train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
 test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
-########## NETWORK ARCHITECTURE INFO ##########
-print('\n' + '='*70)
-print(f'ConvDBN ({NUM_LAYERS}-Layer Convolutional Deep Belief Network) Training ({DATASET.upper()})')
-print('='*70)
+# Network architecture info
+print(f'\nConvDBN ({NUM_LAYERS}-Layer Convolutional Deep Belief Network) Training ({DATASET.upper()})')
+print('-' * 60)
 print('Training Strategy:')
 print(f'  - Each epoch trains all {NUM_LAYERS} layers sequentially')
-layer_sequence = ' → '.join([f'Layer {i+1}' for i in range(NUM_LAYERS)])
+layer_sequence = ' -> '.join([f'Layer {i+1}' for i in range(NUM_LAYERS)])
 print(f'  - {layer_sequence} = 1 complete epoch')
 print('  - Classification accuracy tested after each complete epoch')
-print('='*70)
+print('-' * 60)
 target_baseline = 768 if DATASET == 'mnist' else 3072
 print(f'Architecture (Target: ~{target_baseline} features for fair comparison):')
 print(f'  Input: [batch, {INPUT_CHANNELS}, {INPUT_DIM}, {INPUT_DIM}] ({DATASET.upper()} images)')
 
 print('Architecture Overview:')
 print(f'  - {NUM_LAYERS} ConvRBM layers with stride=1 convolutions')
-print(f'  - Kernel sizes: 5×5 for most layers, 3×3 for some')
+print(f'  - Kernel sizes: 5x5 for most layers, 3x3 for some')
 if DATASET == 'mnist':
     if NUM_LAYERS == 2:
-        print('  - MaxPool(2×2) after first layer for dimensionality reduction')
+        print('  - MaxPool(2x2) after first layer for dimensionality reduction')
 else:  # CIFAR10
     if NUM_LAYERS == 2:
-        print('  - MaxPool(2×2) after first layer for dimensionality reduction')
+        print('  - MaxPool(2x2) after first layer for dimensionality reduction')
 print('  - Target: feature dimensions close to baseline for fair comparison')
 print('  - Actual feature dimensions will be shown after model creation')
-print('='*70)
+print('-' * 60)
 
 print('Parameter Analysis:')
 print('  Note: Actual feature dimensions and parameter count will be calculated after model creation')
-print('='*70)
+print('-' * 60)
 
-########## TRAINING ConvDBN ##########
+# Training ConvDBN
 print('\nCreating ConvDBN...')
 convdbn = ConvDBN(k=CD_K, use_cuda=CUDA, learning_rate=LR,
                   input_channels=INPUT_CHANNELS, input_dim=INPUT_DIM,
@@ -193,7 +192,7 @@ ratio = actual_feature_dims / baseline
 print(f'  Ratio to baseline ({baseline}): {ratio:.3f}')
 status = 'GOOD' if 0.85 <= ratio <= 1.15 else 'ACCEPTABLE' if 0.7 <= ratio <= 1.3 else 'OUT OF RANGE'
 print(f'  Status: {status}')
-print('=' * 70)
+print('-' * 60)
 
 
 def count_parameters(model):
@@ -254,10 +253,9 @@ def evaluate_classification(convdbn, train_loader, test_loader, eval_train=False
     else:
         return test_accuracy
 
-########## TRAINING ##########
-print('\n' + '='*50)
-print('EPOCH-BASED TRAINING')
-print('='*50)
+# Training
+print('\nEPOCH-BASED TRAINING')
+print('-' * 40)
 
 
 print(f"Using full {DATASET.upper()} training set: {len(train_dataset)} samples")
@@ -310,9 +308,9 @@ for epoch in range(1, TOTAL_EPOCHS + 1):
         print(f"  Average Error: {avg_epoch_error:.4f}")
         print(f"  Test Accuracy: {test_accuracy:.4f}\n")
 
-print('='*50)
+print('-' * 40)
 print('TRAINING COMPLETED!')
-print('='*50)
+print('-' * 40)
 
 
 total_params = count_parameters(convdbn)
@@ -324,11 +322,11 @@ if args.eval_train:
     print(f'Final Train Accuracy: {train_accuracy:.4f} ({n_train_samples} train samples)')
     print(f'Final Overfitting Gap: {train_accuracy - test_accuracy:.4f} (Train - Test)')
     if train_accuracy - test_accuracy > 0.1:
-        print('⚠️  WARNING: Significant overfitting detected (gap > 0.1)')
+        print('WARNING: Significant overfitting detected (gap > 0.1)')
     elif train_accuracy - test_accuracy > 0.05:
-        print('⚠️  CAUTION: Moderate overfitting detected (gap > 0.05)')
+        print('CAUTION: Moderate overfitting detected (gap > 0.05)')
     else:
-        print('✅ Good generalization (gap <= 0.05)')
+        print('Good generalization (gap <= 0.05)')
 else:
     test_accuracy = evaluate_classification(convdbn, train_loader, test_loader)
     print(f'Final Test Accuracy: {test_accuracy:.4f}')
@@ -337,4 +335,4 @@ print(f'Total Parameters: {total_params:,}')
 print(f'Feature Dimensions: {actual_feature_dims}')
 print(f'Feature Ratio to Baseline ({baseline}): {actual_feature_dims/baseline:.3f}')
 print(f'Architecture: {NUM_LAYERS}-layer ConvDBN on {DATASET.upper()}')
-print('='*50)
+print('-' * 40)
