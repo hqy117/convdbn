@@ -76,10 +76,10 @@ class ConvRBMLayer(nn.Module):
 
         # Apply sigma scaling
         hidden_pre_scaled = hidden_pre / (self.sigma ** 2)
-        hidden_prob = torch.sigmoid(hidden_pre_scaled)
 
-        # MultinomialMaxPool2d
-        sparse_detection, pooled_map, winner_info = self.multinomial_pool(hidden_prob)
+        # MATLAB compatibility: Pass scaled values directly to pooling (no sigmoid)
+        # MATLAB's sample_multrand works in exp domain, not sigmoid domain
+        sparse_detection, pooled_map, winner_info = self.multinomial_pool(hidden_pre_scaled)
 
         # Store winner info for reconstruction
         self.stored_winner_info = winner_info

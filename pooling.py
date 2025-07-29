@@ -36,13 +36,18 @@ class MultinomialMaxPool2d(nn.Module):
         
     def forward(self, hidden_activations):
         """
-        Multinomial pooling with exact algorithm implementation.
+        Multinomial pooling with exact MATLAB algorithm implementation.
 
         Steps:
         1. Extract regions and create multinomial vectors [a1, a2, ..., 0]
         2. Apply softmax with numerical stability
         3. Perform multinomial sampling (one winner per region or none)
-        4. Create sparse detection map and pooled map
+        4. Create sparse detection map and MATLAB-style pooled probability map
+
+        Returns:
+            sparse_detection: H (full resolution samples)
+            pooled_probs: HPc (MATLAB-style probability aggregation)
+            winner_info: for unpooling
         """
         batch, channels, height, width = hidden_activations.shape
         device = hidden_activations.device
@@ -65,17 +70,22 @@ class MultinomialMaxPool2d(nn.Module):
 
         num_regions = pool_height * pool_width
 
-        # Add "no winner" option
+        # Add "no winner" option (MATLAB: poshidprobs_mult(end,:) = 0)
         no_winner = torch.zeros(batch, channels, num_regions, 1, device=device, dtype=regions.dtype)
         regions_with_null = torch.cat([regions, no_winner], dim=-1)
         # Shape: [batch, channels, num_regions, spacing²+1]
 
-        # Numerical stability (subtract max)
+        # Numerical stability (subtract max) - MATLAB: bsxfun(@minus, poshidprobs_mult, max(poshidprobs_mult,[],1))
+        # MATLAB max([],1) means max across first dimension (choices), for each region separately
         max_vals = torch.max(regions_with_null, dim=-1, keepdim=True)[0]
         stabilized = regions_with_null - max_vals
 
-        # Apply softmax
-        probs = F.softmax(stabilized, dim=-1)
+        # Apply exp (MATLAB: exp(poshidprobs_mult))
+        exp_vals = torch.exp(stabilized)
+
+        # Normalize to get probabilities (MATLAB: bsxfun(@rdivide,P,sumP))
+        sum_vals = torch.sum(exp_vals, dim=-1, keepdim=True)
+        probs = exp_vals / (sum_vals + 1e-8)
 
         # Multinomial sampling using Gumbel-Max trick
         probs_flat = probs.view(-1, spacing*spacing + 1)
@@ -87,13 +97,14 @@ class MultinomialMaxPool2d(nn.Module):
         # Reshape winner indices
         winner_indices = winner_indices.view(batch, channels, pool_height, pool_width)
 
-        # Create sparse detection map (optimized but preserving logic)
+        # Create sparse detection map (H in MATLAB)
         sparse_detection = self._create_sparse_detection_map_optimized(
-            winner_indices, batch, channels, height, width, pool_height, pool_width
+            winner_indices, batch, channels, height, width
         )
 
-        # Create pooled map by aggregating sparse regions
-        pooled_map = self._create_pooled_map_optimized(sparse_detection, spacing)
+        # MATLAB-style probability aggregation (HPc = sum of probabilities excluding "no winner")
+        # This is the key missing piece in the original implementation!
+        pooled_probs = self._create_matlab_pooled_probs(probs, pool_height, pool_width)
 
         # Store winner information for unpooling
         winner_info = {
@@ -103,9 +114,9 @@ class MultinomialMaxPool2d(nn.Module):
             'pooled_shape': (pool_height, pool_width)
         }
 
-        return sparse_detection, pooled_map, winner_info
+        return sparse_detection, pooled_probs, winner_info
     
-    def _create_sparse_detection_map_optimized(self, winner_indices, batch, channels, height, width, pool_height, pool_width):
+    def _create_sparse_detection_map_optimized(self, winner_indices, batch, channels, height, width):
         """Optimized sparse detection map creation using advanced indexing."""
         device = winner_indices.device
         spacing = self.spacing
@@ -144,23 +155,34 @@ class MultinomialMaxPool2d(nn.Module):
 
         return sparse_map
 
-    def _create_pooled_map_optimized(self, sparse_detection, spacing):
-        """Optimized pooled map creation using efficient tensor operations."""
-        batch, channels, height, width = sparse_detection.shape
 
-        # Calculate pooled dimensions
-        pool_height = height // spacing
-        pool_width = width // spacing
 
-        # Use efficient max pooling on sparse detection
-        # This is much faster than manual aggregation
-        pooled_map = F.max_pool2d(
-            sparse_detection,
-            kernel_size=spacing,
-            stride=spacing
-        )
+    def _create_matlab_pooled_probs(self, probs, pool_height, pool_width):
+        """
+        Create MATLAB-style pooled probabilities (HPc).
 
-        return pooled_map
+        MATLAB code equivalent:
+        Pc = sum(P(1:end-1,:));  % Sum probabilities excluding "no winner"
+        HPc = reshape(Pc, [pooled_height, pooled_width, channels]);
+
+        Args:
+            probs: [batch, channels, num_regions, spacing²+1] - multinomial probabilities
+            pool_height, pool_width: pooled dimensions
+
+        Returns:
+            pooled_probs: [batch, channels, pool_height, pool_width] - MATLAB HPc equivalent
+        """
+        batch, channels = probs.shape[:2]
+
+        # Sum probabilities excluding the last one ("no winner" option)
+        # MATLAB: Pc = sum(P(1:end-1,:))
+        prob_sums = torch.sum(probs[:, :, :, :-1], dim=-1)  # [batch, channels, num_regions]
+
+        # Reshape to pooled dimensions
+        # MATLAB: HPc = reshape(Pc, [pooled_height, pooled_width, channels])
+        pooled_probs = prob_sums.view(batch, channels, pool_height, pool_width)
+
+        return pooled_probs
 
 
 
@@ -188,7 +210,7 @@ class SparseUnpool2d(nn.Module):
         Returns:
             sparse_detection: [batch, channels, height, width] - restored sparse map
         """
-        batch, channels, pool_height, pool_width = pooled_map.shape
+        batch, channels = pooled_map.shape[:2]
         original_height, original_width = winner_info['original_shape']
         stored_sparse_pattern = winner_info['sparse_pattern']
 
