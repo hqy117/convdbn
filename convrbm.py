@@ -104,9 +104,9 @@ class ConvRBM():
 
         # Apply sigma scaling
         conv_out = conv_out / (self.sigma ** 2)
-        conv_out = torch.sigmoid(conv_out)
 
-        # Multinomial probabilistic pooling
+        # MATLAB compatibility: Pass scaled values directly to pooling (no sigmoid)
+        # MATLAB's sample_multrand works in exp domain, not sigmoid domain
         sparse_detection, pooled_map, winner_info = self.multinomial_pool(conv_out)
 
         # Step 4: Store information for unpooling
