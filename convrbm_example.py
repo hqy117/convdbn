@@ -55,8 +55,8 @@ DATA_FOLDER = config['data_folder']
 DATASET_CLASS = config['dataset_class']
 NUM_CLASSES = config['num_classes']
 
-# GPU acceleration - enable if available
-CUDA = torch.cuda.is_available()
+# GPU acceleration - temporarily disabled due to probability range issues
+CUDA = False  # torch.cuda.is_available()  # Temporarily disabled
 CUDA_DEVICE = 0
 
 print(f"GPU Available: {CUDA}")

@@ -12,16 +12,18 @@ import numpy as np
 
 def compute_correlation(visible_data, hidden_activations, kernel_size):
     """
-    Compute correlation between visible data and hidden activations.
+    Compute correlation between visible data and hidden activations using
+    an explicit loop-based implementation to match MATLAB's conv2 logic exactly.
 
-    This is the key function for contrastive divergence - it computes the
-    correlation that will be used for weight updates. We use the pre-pooling
-    hidden activations for correlation computation.
+    This function manually implements the convolution as a cross-correlation,
+    which involves flipping the kernel. Since PyTorch's F.conv2d is already
+    cross-correlation, this implementation is designed to be a more transparent
+    and debuggable version of the same operation.
 
     Args:
         visible_data: [batch, in_channels, height, width] - visible layer data
-        hidden_activations: [batch, out_channels, conv_height, conv_width] - hidden activations (pre-pooling)
-        kernel_size: int - size of convolutional kernel
+        hidden_activations: [batch, out_channels, conv_height, conv_width] - hidden activations
+        kernel_size: The size of the square kernel.
 
     Returns:
         correlation: [out_channels, in_channels, kernel_size, kernel_size] - correlation matrix
@@ -29,27 +31,31 @@ def compute_correlation(visible_data, hidden_activations, kernel_size):
     batch_size, in_channels, vis_height, vis_width = visible_data.shape
     _, out_channels, conv_height, conv_width = hidden_activations.shape
 
-    device = visible_data.device
-    correlation = torch.zeros(out_channels, in_channels, kernel_size, kernel_size, device=device)
+    # This check is crucial for the indexing logic to be correct
+    if vis_height - kernel_size + 1 != conv_height or vis_width - kernel_size + 1 != conv_width:
+        raise ValueError("Dimension mismatch between visible data, hidden activations, and kernel size.")
 
-    # For each output channel (filter)
-    for f in range(out_channels):
-        # For each input channel
-        for c in range(in_channels):
-            # For each position in the kernel
-            for ki in range(kernel_size):
-                for kj in range(kernel_size):
-                    # Extract visible patches at this kernel position
-                    vis_patches = visible_data[:, c, ki:ki+conv_height, kj:kj+conv_width]
-                    # Get hidden activations for this filter
-                    hid_acts = hidden_activations[:, f, :, :]
+    correlation = torch.zeros(out_channels, in_channels, kernel_size, kernel_size, device=visible_data.device)
 
-                    # Compute correlation: sum over batch and spatial dimensions
-                    correlation[f, c, ki, kj] = torch.sum(vis_patches * hid_acts)
+    # MATLAB's `conv2(V, rot180(H), 'valid')` is equivalent to cross-correlation.
+    # The manual loops implement cross-correlation directly.
+    # The gradient w.r.t. W_uv is Sum_{i,j} H_{i,j} * V_{i+u, j+v}
 
-    # Normalize by batch size
-    correlation = correlation / batch_size
+    for f_idx in range(out_channels):
+        for c_idx in range(in_channels):
+            for u in range(kernel_size):
+                for v in range(kernel_size):
+                    # Extract the patch from the visible data
+                    vis_patch = visible_data[:, c_idx, u:u+conv_height, v:v+conv_width]
+                    
+                    # The hidden activation map for the current filter
+                    hid_map = hidden_activations[:, f_idx, :, :]
+                    
+                    # Element-wise product and sum over all dimensions (batch, h, w)
+                    corr_value = torch.sum(vis_patch * hid_map)
+                    correlation[f_idx, c_idx, u, v] = corr_value
 
+    # The original MATLAB code does not normalize by batch size here.
     return correlation
 
 

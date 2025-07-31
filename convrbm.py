@@ -166,7 +166,14 @@ class ConvRBM():
 
         # Apply sigma scaling
         conv_pos_scaled = conv_pos / (self.sigma ** 2)
+
+        # MATLAB compatibility: Pass scaled values directly to pooling (no sigmoid)
+        # MATLAB's sample_multrand works in exp domain, not sigmoid domain
+        # Correction: The output of pooling must be a probability for bernoulli sampling.
         conv_pos_sigmoid = torch.sigmoid(conv_pos_scaled)
+
+        # Store for debugging
+        self.last_pre_pool_activations = conv_pos_sigmoid
 
         if profile:
             conv_time = time.time()
@@ -176,6 +183,9 @@ class ConvRBM():
 
         # Multinomial pooling
         sparse_pos, pooled_pos, winner_info_pos = self.multinomial_pool(conv_pos_sigmoid)
+
+        # Store for debugging
+        self.last_post_pool_activations = sparse_pos
 
         if profile:
             pool_time = time.time()
@@ -198,6 +208,11 @@ class ConvRBM():
             profile_info['negative_sampling'] = 0.0
 
         neg_hidden_states = pos_hidden_states
+
+        # Store intermediates from the final CD step for gradient calculation
+        final_neg_visible_probs = None
+        final_sparse_neg = None
+
         for k_step in range(self.k):
             # Reconstruct visible
             if profile:
@@ -222,6 +237,9 @@ class ConvRBM():
 
             conv_neg = F.conv2d(neg_visible_probs, weight=self.conv1_weights, bias=self.conv1_hidden_bias)
             conv_neg_scaled = conv_neg / (self.sigma ** 2)
+
+            # MATLAB compatibility: Pass scaled values directly to pooling (no sigmoid)
+            # Correction: The output of pooling must be a probability for bernoulli sampling.
             conv_neg_sigmoid = torch.sigmoid(conv_neg_scaled)
 
             if profile:
@@ -252,11 +270,10 @@ class ConvRBM():
 
             neg_hidden_states = torch.bernoulli(pooled_neg)
 
-            if profile:
-                neg_samp_time = time.time()
-                if self.use_cuda:
-                    torch.cuda.synchronize()
-                profile_info['negative_sampling'] += neg_samp_time - neg_samp_start
+            # Store the results of the final step
+            if k_step == self.k - 1:
+                final_neg_visible_probs = neg_visible_probs
+                final_sparse_neg = sparse_neg
 
         if profile:
             cd_time = time.time()
@@ -270,6 +287,11 @@ class ConvRBM():
         conv_neg_scaled = conv_neg / (self.sigma ** 2)
         conv_neg_sigmoid = torch.sigmoid(conv_neg_scaled)
 
+        # Set attributes for debugging
+        self.last_positive_hidden = sparse_pos
+        self.last_negative_hidden = sparse_neg
+        self.last_reconstruction = neg_visible_probs
+
         # Gradient computation
         if profile:
             grad_start = time.time()
@@ -277,17 +299,27 @@ class ConvRBM():
                 torch.cuda.synchronize()
 
         with torch.no_grad():
-            # Compute correlations using PRE-POOLING activations (this is crucial!)
-            pos_correlation = compute_correlation(input_data, conv_pos_sigmoid, self.conv_kernel)
-            neg_correlation = compute_correlation(neg_visible_probs, conv_neg_sigmoid, self.conv_kernel)
+            # MATLAB compatibility: Use FULL-RESOLUTION post-pooling probabilities for gradient computation
+            # MATLAB uses PAR.hidprobs (HP - full resolution) in crbm_vishidprod, not pooled probabilities
+            pos_correlation = compute_correlation(input_data, sparse_pos, self.conv_kernel)
+            neg_correlation = compute_correlation(final_neg_visible_probs, final_sparse_neg, self.conv_kernel)
 
             # CD weight gradient = positive correlation - negative correlation
             weight_grad = pos_correlation - neg_correlation
 
-            # Compute bias gradients
+            # Compute bias gradients using FULL-RESOLUTION post-pooling probabilities
             hidden_bias_grad, visible_bias_grad = compute_bias_gradients(
-                conv_pos_sigmoid, conv_neg_sigmoid, input_data, neg_visible_probs
+                sparse_pos, final_sparse_neg, input_data, final_neg_visible_probs
             )
+            
+            # Store gradients for debugging
+            self.last_grads = {
+                'pos_correlation': pos_correlation,
+                'neg_correlation': neg_correlation,
+                'weight_grad': weight_grad,
+                'hidden_bias_grad': hidden_bias_grad,
+                'visible_bias_grad': visible_bias_grad,
+            }
 
             if profile:
                 corr_time = time.time()
@@ -302,9 +334,10 @@ class ConvRBM():
                     torch.cuda.synchronize()
 
             if self.plambda > 0:  # Only apply if sparsity penalty is enabled
-                # Compute positive hidden activations (sum over spatial dimensions)
-                pos_hidden_act = torch.sum(conv_pos_sigmoid, dim=(0, 2, 3))  # [num_filters]
-                hidden_size = conv_pos_sigmoid.shape[2] * conv_pos_sigmoid.shape[3]  # spatial size
+                # MATLAB compatibility: Use FULL-RESOLUTION post-pooling probabilities for sparsity computation
+                # MATLAB uses PAR.poshidact which comes from full-resolution hidprobs (HP)
+                pos_hidden_act = torch.sum(sparse_pos, dim=(0, 2, 3))  # [num_filters]
+                hidden_size = sparse_pos.shape[2] * sparse_pos.shape[3]  # spatial size
                 pos_hidden_act = pos_hidden_act / (batch_size * hidden_size)  # normalize
 
                 # Update running average of hidden unit probabilities

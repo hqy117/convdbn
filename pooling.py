@@ -97,9 +97,9 @@ class MultinomialMaxPool2d(nn.Module):
         # Reshape winner indices
         winner_indices = winner_indices.view(batch, channels, pool_height, pool_width)
 
-        # Create sparse detection map (H in MATLAB)
-        sparse_detection = self._create_sparse_detection_map_optimized(
-            winner_indices, batch, channels, height, width
+        # Create sparse detection map (HP in MATLAB - probabilities, not binary samples)
+        sparse_detection = self._create_sparse_probability_map(
+            probs, winner_indices, batch, channels, height, width
         )
 
         # MATLAB-style probability aggregation (HPc = sum of probabilities excluding "no winner")
@@ -155,6 +155,67 @@ class MultinomialMaxPool2d(nn.Module):
 
         return sparse_map
 
+    def _create_sparse_probability_map(self, probs, winner_indices, batch, channels, height, width):
+        """
+        Create sparse probability map (HP in MATLAB - full resolution probabilities).
+
+        This returns the actual probability values at winner locations,
+        not binary 0/1 samples like _create_sparse_detection_map_optimized.
+
+        Args:
+            probs: [batch, channels, num_regions, spacing²+1] - multinomial probabilities
+            winner_indices: [batch, channels, pool_height, pool_width] - winner indices
+            batch, channels, height, width: dimensions
+
+        Returns:
+            sparse_prob_map: [batch, channels, height, width] - probability values
+        """
+        device = winner_indices.device
+        spacing = self.spacing
+        pool_height = height // spacing
+        pool_width = width // spacing
+
+        # Initialize sparse probability map
+        sparse_prob_map = torch.zeros(batch, channels, height, width, device=device, dtype=torch.float32)
+
+        # Create masks for valid winners (not "no winner" option)
+        valid_mask = winner_indices < (spacing * spacing)
+
+        if valid_mask.any():
+            # Get all valid indices at once
+            b_idx, c_idx, ph_idx, pw_idx = torch.where(valid_mask)
+            valid_winners = winner_indices[valid_mask]
+
+            # Get the corresponding probabilities for the winners
+            # probs shape: [batch, channels, num_regions, spacing²+1]
+            # We need to get probs[b_idx, c_idx, region_idx, winner_idx]
+            region_idx = ph_idx * pool_width + pw_idx  # Convert 2D pool coords to 1D region index
+            winner_probs = probs[b_idx, c_idx, region_idx, valid_winners]
+
+            # Convert linear indices to 2D positions (vectorized)
+            local_h = valid_winners // spacing
+            local_w = valid_winners % spacing
+
+            # Convert to global positions (vectorized)
+            global_h = ph_idx * spacing + local_h
+            global_w = pw_idx * spacing + local_w
+
+            # Bounds checking (vectorized)
+            valid_coords = (global_h < height) & (global_w < width)
+
+            if valid_coords.any():
+                # Apply valid coordinates
+                b_final = b_idx[valid_coords]
+                c_final = c_idx[valid_coords]
+                h_final = global_h[valid_coords]
+                w_final = global_w[valid_coords]
+                prob_final = winner_probs[valid_coords]
+
+                # Set winner probabilities (not 1.0, but actual probability values)
+                sparse_prob_map[b_final, c_final, h_final, w_final] = prob_final
+
+        return sparse_prob_map
+
 
 
     def _create_matlab_pooled_probs(self, probs, pool_height, pool_width):
@@ -181,6 +242,10 @@ class MultinomialMaxPool2d(nn.Module):
         # Reshape to pooled dimensions
         # MATLAB: HPc = reshape(Pc, [pooled_height, pooled_width, channels])
         pooled_probs = prob_sums.view(batch, channels, pool_height, pool_width)
+
+        # Numerical stability: ensure values are in [0, 1] range for bernoulli sampling
+        # This handles floating point precision issues where sums might slightly exceed 1.0
+        # pooled_probs = torch.clamp(pooled_probs, min=0.0, max=1.0)
 
         return pooled_probs
 
