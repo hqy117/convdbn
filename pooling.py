@@ -169,11 +169,31 @@ class SparseUnpool2d(nn.Module):
 
     def forward(self, pooled_map, winner_info):
         """
-        Restores the sparse map using the stored `sparse_pattern`.
-        
-        Note: The `pooled_map` input is not directly used for reconstruction
-        in this implementation, as the full sparse pattern is already stored
-        in `winner_info`. This matches the logic where unpooling is primarily
-        about restoring a known sparse pattern.
+        Reconstruct the sparse detection map from the pooled activation map
+        and the winner indices saved during the forward pooling pass.
         """
-        return winner_info['sparse_pattern']
+        spacing = self.spacing
+        winner_indices = winner_info['winner_indices']
+        height, width = winner_info['original_shape']
+        batch, channels, pool_h, pool_w = pooled_map.shape
+
+        # Initialize empty sparse map
+        sparse_map = pooled_map.new_zeros(batch, channels, height, width)
+
+        # Determine valid winners (exclude the "no-winner" option)
+        valid_mask = winner_indices < (spacing * spacing)
+        if valid_mask.any():
+            b_idx, c_idx, ph_idx, pw_idx = torch.where(valid_mask)
+            local_idx = winner_indices[valid_mask]
+
+            # Coordinates inside each pooling cell
+            lh = local_idx // spacing
+            lw = local_idx % spacing
+
+            # Map back to original spatial coordinates
+            gh = ph_idx * spacing + lh
+            gw = pw_idx * spacing + lw
+
+            sparse_map[b_idx, c_idx, gh, gw] = pooled_map[b_idx, c_idx, ph_idx, pw_idx]
+
+        return sparse_map

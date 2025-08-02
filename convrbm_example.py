@@ -96,17 +96,40 @@ if args.subset_size is not None:
 train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
 test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
-convrbm = ConvRBM(
-    k=CD_K, 
-    use_cuda=CUDA,
-    learning_rate=1e-3,
-    input_channels=INPUT_CHANNELS, 
-    # Sparsity parameters from demo_cdbn.m
-    pbias=0.002, 
-    plambda=5.0, 
-    # Other RBM parameters
-    sigma=0.2
-)
+# ----- Dataset-specific hyperparameters -----
+if DATASET == 'mnist':
+    # 原来在 MNIST 上表现良好的设置保持不变
+    convrbm = ConvRBM(
+        k=CD_K,
+        use_cuda=CUDA,
+        learning_rate=1e-2,
+        input_channels=INPUT_CHANNELS,
+        pbias=0.002,
+        plambda=5.0,
+        sigma=1.0,
+    )
+elif DATASET == 'cifar10':
+    # CIFAR-10 需要更温和的稀疏约束和更大的感受野
+    convrbm = ConvRBM(
+        k=CD_K,
+        use_cuda=CUDA,
+        learning_rate=1e-2,
+        momentum_coefficient=0.9,
+        weight_decay=1e-4,
+
+        input_channels=INPUT_CHANNELS,
+        num_filters=38,      # 38 × 81 ≈ 3078 features
+        conv_kernel=5,
+        pool_stride=3,
+
+        pbias=0.05,
+        plambda=0.1,
+        eta_sparsity=0.01,
+
+        sigma=1.0,
+    )
+else:
+    raise ValueError(f'Unsupported dataset: {DATASET}')
 
 ########## NETWORK ARCHITECTURE INFO ##########
 print('=' * 60)
