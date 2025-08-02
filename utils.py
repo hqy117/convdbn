@@ -60,104 +60,60 @@ def compute_correlation(visible_data, hidden_activations, kernel_size):
 
 
 def compute_bias_gradients(hidden_activations_pos, hidden_activations_neg,
-                          visible_data_pos, visible_data_neg):
+                           visible_data_pos, visible_data_neg):
     """
-    Compute bias gradients for both hidden and visible units.
-
-    Args:
-        hidden_activations_pos: [batch, channels, height, width] - positive phase hidden
-        hidden_activations_neg: [batch, channels, height, width] - negative phase hidden
-        visible_data_pos: [batch, channels, height, width] - positive phase visible
-        visible_data_neg: [batch, channels, height, width] - negative phase visible
-
-    Returns:
-        hidden_bias_grad: [channels] - hidden bias gradients
-        visible_bias_grad: [channels] - visible bias gradients
+    Computes bias gradients for both hidden and visible units.
     """
-    batch_size = hidden_activations_pos.shape[0]
+    # Normalization factor for hidden and visible layers respectively
+    hid_size = hidden_activations_pos.shape[2] * hidden_activations_pos.shape[3]
+    vis_size = visible_data_pos.shape[2] * visible_data_pos.shape[3]
 
-    # Hidden bias gradient: difference in average activation
-    hidden_bias_grad = (torch.sum(hidden_activations_pos, dim=(0, 2, 3)) -
-                       torch.sum(hidden_activations_neg, dim=(0, 2, 3))) / batch_size
+    # Hidden bias gradient: difference in mean activation
+    pos_hid_act = torch.sum(hidden_activations_pos, dim=(0, 2, 3))
+    neg_hid_act = torch.sum(hidden_activations_neg, dim=(0, 2, 3))
+    hidden_bias_grad = (pos_hid_act - neg_hid_act) / hid_size
 
-    # Visible bias gradient: difference in average activation
-    visible_bias_grad = (torch.sum(visible_data_pos, dim=(0, 2, 3)) -
-                        torch.sum(visible_data_neg, dim=(0, 2, 3))) / batch_size
+    # Visible bias gradient: difference in mean activation
+    pos_vis_act = torch.sum(visible_data_pos, dim=(0, 2, 3))
+    neg_vis_act = torch.sum(visible_data_neg, dim=(0, 2, 3))
+    visible_bias_grad = (pos_vis_act - neg_vis_act) / vis_size
 
     return hidden_bias_grad, visible_bias_grad
 
 
 def update_parameters_with_momentum(weights, weight_grad, weight_momentum,
-                                   bias, bias_grad, bias_momentum,
-                                   learning_rate, momentum_coeff, weight_decay=0.0):
+                                    bias, bias_grad, bias_momentum,
+                                    learning_rate, momentum_coeff, weight_decay=0.0):
     """
-    Update parameters using momentum and optional weight decay.
-
-    Args:
-        weights: current weight tensor
-        weight_grad: weight gradients
-        weight_momentum: weight momentum tensor
-        bias: current bias tensor
-        bias_grad: bias gradients
-        bias_momentum: bias momentum tensor
-        learning_rate: learning rate
-        momentum_coeff: momentum coefficient
-        weight_decay: L2 weight decay coefficient
-
-    Returns:
-        None (updates tensors in-place)
+    Updates parameters using momentum and optional L2 weight decay,
+    following the logic from the original MATLAB implementation.
+    
+    Note: Updates are performed in-place.
     """
-    # Weight updates with momentum and weight decay
-    weight_momentum.mul_(momentum_coeff)
-    if weight_decay > 0:
-        weight_grad = weight_grad + weight_decay * weights
-    weight_momentum.add_(weight_grad)
-    weights.add_(weight_momentum, alpha=learning_rate)
+    # --- Weight updates ---
+    # 1. Calculate final gradient including L2 penalty
+    #    (MATLAB: dW_total = (pos-neg)/hidsize - l2reg*W)
+    weight_grad_final = weight_grad.add(weights, alpha=-weight_decay)
 
-    # Bias updates with momentum (no weight decay on biases)
-    bias_momentum.mul_(momentum_coeff)
-    bias_momentum.add_(bias_grad)
-    bias.add_(bias_momentum, alpha=learning_rate)
+    # 2. Update momentum term: mom = mom_coeff*mom + lr*grad_final
+    weight_momentum.mul_(momentum_coeff).add_(weight_grad_final, alpha=learning_rate)
+    
+    # 3. Apply update: W = W + mom
+    weights.add_(weight_momentum)
+
+    # --- Bias updates (no weight decay on biases) ---
+    # 1. Update momentum term: mom = mom_coeff*mom + lr*grad
+    bias_momentum.mul_(momentum_coeff).add_(bias_grad, alpha=learning_rate)
+    
+    # 2. Apply update: bias = bias + mom
+    bias.add_(bias_momentum)
 
 
 def compute_reconstruction_error(original, reconstructed):
     """
-    Compute reconstruction error between original and reconstructed data.
-
-    Args:
-        original: [batch, channels, height, width] - original data
-        reconstructed: [batch, channels, height, width] - reconstructed data
-
-    Returns:
-        error: scalar - mean squared error
+    Computes the Mean Squared Error (MSE) between original and reconstructed data.
     """
     return F.mse_loss(reconstructed, original).item()
-
-
-def check_gradient_magnitudes(weight_grad, bias_grad, threshold=1e-8):
-    """
-    Check if gradients are reasonable (not too small or too large).
-
-    Args:
-        weight_grad: weight gradients
-        bias_grad: bias gradients
-        threshold: minimum gradient magnitude threshold
-
-    Returns:
-        dict with gradient statistics
-    """
-    weight_grad_norm = torch.norm(weight_grad).item()
-    bias_grad_norm = torch.norm(bias_grad).item()
-
-    stats = {
-        'weight_grad_norm': weight_grad_norm,
-        'bias_grad_norm': bias_grad_norm,
-        'weight_grad_max': torch.max(torch.abs(weight_grad)).item(),
-        'bias_grad_max': torch.max(torch.abs(bias_grad)).item(),
-        'gradients_too_small': weight_grad_norm < threshold and bias_grad_norm < threshold
-    }
-
-    return stats
 
 
 def sampling_bernoulli(probs):

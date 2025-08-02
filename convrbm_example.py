@@ -55,14 +55,12 @@ DATA_FOLDER = config['data_folder']
 DATASET_CLASS = config['dataset_class']
 NUM_CLASSES = config['num_classes']
 
-# GPU acceleration - temporarily disabled due to probability range issues
-CUDA = False  # torch.cuda.is_available()  # Temporarily disabled
+# GPU acceleration
+# CUDA = torch.cuda.is_available()
+CUDA = False # GPU running has bug
 CUDA_DEVICE = 0
 
 print(f"GPU Available: {CUDA}")
-if CUDA:
-    print(f"GPU Device: {torch.cuda.get_device_name(CUDA_DEVICE)}")
-    print(f"GPU Memory: {torch.cuda.get_device_properties(CUDA_DEVICE).total_memory / 1e9:.1f} GB")
 
 # Training parameters
 # Adaptive batch size based on GPU availability
@@ -72,7 +70,9 @@ elif CUDA:
     BATCH_SIZE = 200  # Larger batch size for GPU
 else:
     BATCH_SIZE = 100  # Standard batch size for CPU
-HIDDEN_UNITS = 128
+
+# Note: HIDDEN_UNITS is not directly used by ConvRBM, but kept for context.
+HIDDEN_UNITS = 128 
 CD_K = 2
 EPOCHS = args.epochs
 
@@ -96,17 +96,17 @@ if args.subset_size is not None:
 train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
 test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
-# Use corrected ConvRBM with multi-channel input support
-# For CIFAR10, use 3072 feature dimensions; for MNIST, use 768 features
-if DATASET == 'cifar10':
-    TARGET_FEATURES = 3072  # Close to raw CIFAR10 pixels (32×32×3=3072)
-elif DATASET == 'mnist':
-    TARGET_FEATURES = 768   # Close to raw MNIST pixels (28×28=784)
-else:
-    TARGET_FEATURES = None
-convrbm = ConvRBM(k=CD_K, use_cuda=CUDA, batch_size=BATCH_SIZE, learning_rate=1e-3,
-                  input_channels=INPUT_CHANNELS, target_features=TARGET_FEATURES,
-                  pbias=0.002, plambda=5.0, eta_sparsity=0.0, sigma=0.2, sigma_stop=0.1, sigma_schedule=True)
+convrbm = ConvRBM(
+    k=CD_K, 
+    use_cuda=CUDA,
+    learning_rate=1e-3,
+    input_channels=INPUT_CHANNELS, 
+    # Sparsity parameters from demo_cdbn.m
+    pbias=0.002, 
+    plambda=5.0, 
+    # Other RBM parameters
+    sigma=0.2
+)
 
 ########## NETWORK ARCHITECTURE INFO ##########
 print('=' * 60)
@@ -115,7 +115,7 @@ print('=' * 60)
 
 # Calculate output dimensions using actual ConvRBM parameters
 conv_out_dim = INPUT_DIM - convrbm.conv_kernel + 1
-pool_out_dim = (conv_out_dim - convrbm.pool_kernel) // convrbm.pool_stride + 1
+pool_out_dim = conv_out_dim // convrbm.pool_stride
 hidden_features = convrbm.num_filters * pool_out_dim * pool_out_dim
 
 print(f'Input: [batch_size, {INPUT_CHANNELS}, {INPUT_DIM}, {INPUT_DIM}] ({DATASET.upper()} images)')
@@ -125,7 +125,7 @@ print(f'  → Output: [batch_size, {convrbm.num_filters}, {conv_out_dim}, {conv_
 print('  ↓')
 print('Sigmoid activation')
 print('  ↓')
-print(f'MultinomialMaxPool2d: {convrbm.pool_kernel}×{convrbm.pool_kernel} regions, multinomial sampling')
+print(f'MultinomialMaxPool2d: stride={convrbm.pool_stride}')
 print(f'  → Detection map: [batch_size, {convrbm.num_filters}, {conv_out_dim}, {conv_out_dim}] (sparse)')
 print(f'  → Pooled features: [batch_size, {convrbm.num_filters}, {pool_out_dim}, {pool_out_dim}] (aggregated)')
 print('  ↓')
@@ -161,8 +161,6 @@ print('=' * 60)
 ########## TRAINING Convolutional RBM ##########
 print('Training Convolutional RBM...')
 
-# ConvRBM initialized above
-
 def evaluate_model(convrbm, train_loader, test_loader, max_train_samples=60000, max_test_samples=10000, eval_train=False):
     """Evaluate model performance"""
     
@@ -187,18 +185,14 @@ def evaluate_model(convrbm, train_loader, test_loader, max_train_samples=60000, 
         if CUDA:
             batch = batch.cuda()
             
-        try:
-            features = convrbm.get_hidden_features(batch)
-            if CUDA:
-                features = features.cpu()
-            
-            train_features.append(features.detach().numpy())
-            train_labels.append(labels.numpy())
-            train_count += BATCH_SIZE
-            
-        except Exception as e:
-            continue
-    
+        features = convrbm.get_hidden_features(batch)
+        if CUDA:
+            features = features.cpu()
+        
+        train_features.append(features.detach().numpy())
+        train_labels.append(labels.numpy())
+        train_count += batch.size(0)
+
     # Extract test features
     test_features = []
     test_labels = []
@@ -214,18 +208,14 @@ def evaluate_model(convrbm, train_loader, test_loader, max_train_samples=60000, 
         if CUDA:
             batch = batch.cuda()
             
-        try:
-            features = convrbm.get_hidden_features(batch)
-            if CUDA:
-                features = features.cpu()
-            
-            test_features.append(features.detach().numpy())
-            test_labels.append(labels.numpy())
-            test_count += BATCH_SIZE
-            
-        except Exception as e:
-            continue
-    
+        features = convrbm.get_hidden_features(batch)
+        if CUDA:
+            features = features.cpu()
+        
+        test_features.append(features.detach().numpy())
+        test_labels.append(labels.numpy())
+        test_count += batch.size(0)
+
     if len(train_features) > 0 and len(test_features) > 0:
         # Combine features
         train_features = np.vstack(train_features)
@@ -277,10 +267,6 @@ for epoch in range(EPOCHS):
     # Use tqdm to show training progress
     train_pbar = tqdm(train_loader, desc=f"Training Epoch {epoch + 1}")
     for batch, _ in train_pbar:
-        # Ensure consistent batch size
-        if batch.size(0) != BATCH_SIZE:
-            continue
-            
         # Ensure correct input format [batch_size, channels, height, width]
         batch = batch.view(batch.size(0), INPUT_CHANNELS, INPUT_DIM, INPUT_DIM)
         count += 1
@@ -288,49 +274,21 @@ for epoch in range(EPOCHS):
         if CUDA:
             batch = batch.cuda()
 
-        try:
-            # Enable profiling for first few batches if requested
-            enable_profile = args.profile and (count <= 3 or count % 10 == 0)
+        batch_error = convrbm.contrastive_divergence(batch)
 
-            if enable_profile:
-                batch_error, profile_info = convrbm.contrastive_divergence(batch, profile=True)
+        epoch_error += batch_error
 
-                # Print detailed timing information
-                total_time = profile_info['total_time']
-                print(f"\nBATCH {count} PERFORMANCE PROFILE")
-                print(f"Total Time: {total_time:.3f}s")
-                print(f"  Positive Phase:")
-                print(f"    - Convolution: {profile_info['positive_conv']:.3f}s ({profile_info['positive_conv']/total_time*100:.1f}%)")
-                print(f"    - Pooling: {profile_info['positive_pooling']:.3f}s ({profile_info['positive_pooling']/total_time*100:.1f}%)")
-                print(f"  Negative Phase (CD-{convrbm.k}): {profile_info['negative_cd_k_total']:.3f}s ({profile_info['negative_cd_k_total']/total_time*100:.1f}%)")
-                print(f"    - Visible Reconstruction: {profile_info['negative_visible_reconstruction']:.3f}s ({profile_info['negative_visible_reconstruction']/total_time*100:.1f}%)")
-                print(f"    - Convolution: {profile_info['negative_conv']:.3f}s ({profile_info['negative_conv']/total_time*100:.1f}%)")
-                print(f"    - Pooling: {profile_info['negative_pooling']:.3f}s ({profile_info['negative_pooling']/total_time*100:.1f}%)")
-                print(f"    - Sampling: {profile_info['negative_sampling']:.3f}s ({profile_info['negative_sampling']/total_time*100:.1f}%)")
-                print(f"  Gradient Computation: {profile_info['gradient_computation']:.3f}s ({profile_info['gradient_computation']/total_time*100:.1f}%)")
-                print(f"  Sparsity Regularization: {profile_info['sparsity_regularization']:.3f}s ({profile_info['sparsity_regularization']/total_time*100:.1f}%)")
-                print(f"  Parameter Updates: {profile_info['parameter_updates']:.3f}s ({profile_info['parameter_updates']/total_time*100:.1f}%)")
-                print(f"  Batch Size: {batch.shape[0]}, Error: {batch_error:.4f}")
-                print("-" * 50)
-            else:
-                batch_error = convrbm.contrastive_divergence(batch)
+        # Clean GPU memory
+        if CUDA:
+            torch.cuda.empty_cache()
 
-            epoch_error += batch_error
-
-            # Clean GPU memory
-            if CUDA:
-                torch.cuda.empty_cache()
-
-            # Update progress bar info
-            avg_error = epoch_error / count
-            train_pbar.set_postfix({
-                'batch': f'{count}',
-                'avg_error': f'{avg_error:.4f}'
-            })
+        # Update progress bar info
+        avg_error = epoch_error / count
+        train_pbar.set_postfix({
+            'batch': f'{count}',
+            'avg_error': f'{avg_error:.4f}'
+        })
                 
-        except Exception as e:
-            continue
-    
     train_pbar.close()
             
     avg_epoch_error = epoch_error / max(count, 1)
