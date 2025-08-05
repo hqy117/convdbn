@@ -113,8 +113,8 @@ elif DATASET == 'cifar10':
     convrbm = ConvRBM(
         k=CD_K,
         use_cuda=CUDA,
-        learning_rate=1e-2,
-        momentum_coefficient=0.9,
+        learning_rate=2e-3,
+        momentum_coefficient=0.5,
         weight_decay=1e-4,
 
         input_channels=INPUT_CHANNELS,
@@ -123,8 +123,8 @@ elif DATASET == 'cifar10':
         pool_stride=3,
 
         pbias=0.05,
-        plambda=0.1,
-        eta_sparsity=0.01,
+        plambda=0.01,
+        eta_sparsity=0.02,
 
         sigma=1.0,
     )
@@ -168,7 +168,7 @@ print(f'Training Parameters:')
 print(f'  - Epochs: {EPOCHS}')
 print(f'  - Batch Size: {BATCH_SIZE}')
 print(f'  - CD Steps: {CD_K}')
-print(f'  - Learning Rate: 1e-3')
+print(f'  - Learning Rate: {convrbm.learning_rate}')
 print(f'  - Device: {"CUDA" if CUDA else "CPU"}')
 print('=' * 60)
 print(f'Sparsity & Sigma Parameters (demo_cdbn.m style):')
