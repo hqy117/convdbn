@@ -123,8 +123,9 @@ class ConvRBM():
                 activation = torch.sigmoid(conv_out_scaled)
             else:
                 activation = F.relu(conv_out_scaled)
-            pooled_map, winner_info = self.max_pool(activation)
-            # For correlation purposes we keep the pre-pooled activations as sparse_detection
+            pooled_map, indices = self.max_pool(activation)
+            # Store indices and original shape for unpooling
+            winner_info = (indices, activation.shape)
             sparse_detection = activation
 
         return sparse_detection, pooled_map, winner_info
@@ -138,7 +139,8 @@ class ConvRBM():
         if self.pooling_type == 'rbm':
             sparse_detection = self.sparse_unpool(hidden_probabilities, winner_info)
         else:
-            sparse_detection = self.max_unpool(hidden_probabilities, winner_info)
+            indices, out_shape = winner_info
+            sparse_detection = self.max_unpool(hidden_probabilities, indices, output_size=out_shape)
 
         # Transpose convolution to reconstruct
         visible_recon = F.conv_transpose2d(sparse_detection, weight=self.conv1_weights,
