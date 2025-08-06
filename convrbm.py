@@ -19,7 +19,9 @@ class ConvRBM():
                  # Sparsity
                  pbias=0.0, plambda=0.0, eta_sparsity=0.0,
                  # Sigma (noise)
-                 sigma=1.0, sigma_stop=None, sigma_schedule=True):
+                 sigma=1.0, sigma_stop=None, sigma_schedule=True,
+                 # New control options
+                 pooling_type='rbm', non_linear='sigmoid'):
 
         self.k = k
         self.learning_rate = learning_rate
@@ -27,6 +29,9 @@ class ConvRBM():
         self.weight_decay = weight_decay
         self.use_cuda = use_cuda
         self.input_channels = input_channels
+        # New control options
+        self.pooling_type = pooling_type
+        self.non_linear = non_linear
 
         # Sparsity regularization parameters
         self.pbias = pbias  # Target sparsity level
@@ -67,9 +72,14 @@ class ConvRBM():
         self.conv1_visible_bias = nn.Parameter(torch.zeros(input_channels))
         self.conv1_hidden_bias = nn.Parameter(torch.zeros(self.num_filters))
 
-        # Probabilistic pooling layers
-        self.multinomial_pool = MultinomialMaxPool2d(spacing=self.pool_stride)
-        self.sparse_unpool = SparseUnpool2d(spacing=self.pool_stride)
+        # Pooling layers based on pooling_type
+        if self.pooling_type == 'rbm':
+            self.multinomial_pool = MultinomialMaxPool2d(spacing=self.pool_stride)
+            self.sparse_unpool = SparseUnpool2d(spacing=self.pool_stride)
+        else:
+            # Standard MaxPool / Unpool used in typical CNNs
+            self.max_pool = nn.MaxPool2d(kernel_size=self.pool_stride, stride=self.pool_stride, return_indices=True)
+            self.max_unpool = nn.MaxUnpool2d(kernel_size=self.pool_stride, stride=self.pool_stride)
 
         # Momentum terms
         self.conv1_weights_momentum = torch.zeros_like(self.conv1_weights)
@@ -103,9 +113,19 @@ class ConvRBM():
 
         # Apply sigma scaling, which is part of the energy function
         conv_out_scaled = conv_out / (self.sigma ** 2)
-        
-        # This function returns all necessary components
-        sparse_detection, pooled_map, winner_info = self.multinomial_pool(conv_out_scaled)
+
+        if self.pooling_type == 'rbm':
+            # Multinomial pooling expects pre-activation values (no sigmoid)
+            sparse_detection, pooled_map, winner_info = self.multinomial_pool(conv_out_scaled)
+        else:
+            # Apply chosen non-linear activation before standard max pooling
+            if self.non_linear == 'sigmoid':
+                activation = torch.sigmoid(conv_out_scaled)
+            else:
+                activation = F.relu(conv_out_scaled)
+            pooled_map, winner_info = self.max_pool(activation)
+            # For correlation purposes we keep the pre-pooled activations as sparse_detection
+            sparse_detection = activation
 
         return sparse_detection, pooled_map, winner_info
 
@@ -114,15 +134,22 @@ class ConvRBM():
         Samples visible units from hidden units (reconstruction).
         Requires winner_info for the unpooling operation.
         """
-        # Unpool to restore the sparse, full-resolution hidden activation map
-        sparse_detection = self.sparse_unpool(hidden_probabilities, winner_info)
+        # Restore the sparse, full-resolution hidden activation map based on pooling type
+        if self.pooling_type == 'rbm':
+            sparse_detection = self.sparse_unpool(hidden_probabilities, winner_info)
+        else:
+            sparse_detection = self.max_unpool(hidden_probabilities, winner_info)
 
         # Transpose convolution to reconstruct
         visible_recon = F.conv_transpose2d(sparse_detection, weight=self.conv1_weights,
-                                         bias=self.conv1_visible_bias)
+                                           bias=self.conv1_visible_bias)
 
-        # Apply sigma and sigmoid
-        visible_recon = torch.sigmoid(visible_recon / (self.sigma ** 2))
+        # Apply sigma scaling followed by chosen non-linear function
+        visible_recon = visible_recon / (self.sigma ** 2)
+        if self.non_linear == 'sigmoid':
+            visible_recon = torch.sigmoid(visible_recon)
+        else:
+            visible_recon = F.relu(visible_recon)
 
         return visible_recon
 
@@ -135,8 +162,11 @@ class ConvRBM():
         # Sample hidden layer from the input data
         sparse_pos, pooled_pos, winner_info_pos = self.sample_hidden(input_data)
         
-        # Get binary hidden states
-        pos_hidden_states = torch.bernoulli(pooled_pos)
+        # Get binary hidden states (handle different activation types)
+        if self.non_linear == 'sigmoid':
+            pos_hidden_states = torch.bernoulli(pooled_pos)
+        else:
+            pos_hidden_states = (pooled_pos > 0).float()
 
         # NEGATIVE PHASE (CD-k)
         # =======================
@@ -152,7 +182,10 @@ class ConvRBM():
             sparse_neg, pooled_neg, winner_info_neg = self.sample_hidden(neg_visible_probs)
             
             # Update for the next Gibbs step
-            neg_hidden_states = torch.bernoulli(pooled_neg)
+            if self.non_linear == 'sigmoid':
+                neg_hidden_states = torch.bernoulli(pooled_neg)
+            else:
+                neg_hidden_states = (pooled_neg > 0).float()
             current_winner_info = winner_info_neg
 
         # Final state of the negative chain
@@ -204,7 +237,10 @@ class ConvRBM():
         with torch.no_grad():
             conv_out = F.conv2d(visible_data, weight=self.conv1_weights, bias=self.conv1_hidden_bias)
             conv_out_scaled = conv_out / (self.sigma ** 2)
-            return torch.sigmoid(conv_out_scaled)
+            if self.non_linear == 'sigmoid':
+                return torch.sigmoid(conv_out_scaled)
+            else:
+                return F.relu(conv_out_scaled)
 
     def reconstruct(self, input_data):
         """Reconstruct input data using the full forward-backward pass"""

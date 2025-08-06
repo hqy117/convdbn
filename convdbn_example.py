@@ -135,10 +135,28 @@ print('-' * 60)
 
 # Training ConvDBN
 print('\nCreating ConvDBN...')
-convdbn = ConvDBN(k=CD_K, use_cuda=CUDA, learning_rate=LR,
-                  input_channels=INPUT_CHANNELS, input_dim=INPUT_DIM,
-                  dataset=DATASET, num_layers=NUM_LAYERS,
-                  pbias=0.002, plambda=5.0, eta_sparsity=0.0, sigma=0.2, sigma_stop=0.1, sigma_schedule=True)
+if DATASET == 'mnist':
+    # MNIST: 学习率稍高，较强稀疏约束
+    convdbn = ConvDBN(k=CD_K, use_cuda=CUDA,
+                      learning_rate=5e-3,  # 更快收敛
+                      input_channels=INPUT_CHANNELS, input_dim=INPUT_DIM,
+                      dataset=DATASET, num_layers=NUM_LAYERS,
+                      pbias=0.002,  # 稀疏目标保持较低
+                      plambda=5.0,
+                      eta_sparsity=0.0,
+                      sigma=0.2, sigma_stop=0.1, sigma_schedule=True)
+elif DATASET == 'cifar10':
+    # CIFAR-10: 较低学习率，放松稀疏约束
+    convdbn = ConvDBN(k=CD_K, use_cuda=CUDA,
+                      learning_rate=1e-3,
+                      input_channels=INPUT_CHANNELS, input_dim=INPUT_DIM,
+                      dataset=DATASET, num_layers=NUM_LAYERS,
+                      pbias=0.01,
+                      plambda=2.0,
+                      eta_sparsity=0.02,
+                      sigma=0.2, sigma_stop=0.1, sigma_schedule=True)
+else:
+    raise ValueError(f'Unsupported dataset: {DATASET}')
 
 # Get actual feature dimensions and architecture details from the model
 print('\nAnalyzing actual model architecture...')

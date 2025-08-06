@@ -11,7 +11,8 @@ class ConvRBMLayer(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0,
                  k=2, learning_rate=1e-3, momentum_coefficient=0.5, weight_decay=1e-4, use_cuda=False,
                  spacing=3, pbias=0.002, plambda=5.0, eta_sparsity=0.0,
-                 sigma=0.2, sigma_stop=0.1, sigma_schedule=True):
+                 sigma=0.2, sigma_stop=0.1, sigma_schedule=True,
+                 pooling_type='rbm', non_linear='sigmoid'):
         super(ConvRBMLayer, self).__init__()
 
         self.in_channels = in_channels
@@ -24,6 +25,9 @@ class ConvRBMLayer(nn.Module):
         self.momentum_coefficient = momentum_coefficient
         self.weight_decay = weight_decay
         self.use_cuda = use_cuda
+        # New control options
+        self.pooling_type = pooling_type
+        self.non_linear = non_linear
 
         # Sparsity and sigma parameters
         self.spacing = spacing
@@ -45,9 +49,13 @@ class ConvRBMLayer(nn.Module):
         self.visible_bias_momentum = torch.zeros_like(self.visible_bias)
         self.hidden_bias_momentum = torch.zeros_like(self.hidden_bias)
 
-        # Pooling layers
-        self.multinomial_pool = MultinomialMaxPool2d(spacing=spacing)
-        self.sparse_unpool = SparseUnpool2d(spacing=spacing)
+        # Pooling layers based on pooling_type
+        if self.pooling_type == 'rbm':
+            self.multinomial_pool = MultinomialMaxPool2d(spacing=spacing)
+            self.sparse_unpool = SparseUnpool2d(spacing=spacing)
+        else:
+            self.max_pool = nn.MaxPool2d(kernel_size=spacing, stride=spacing, return_indices=True)
+            self.max_unpool = nn.MaxUnpool2d(kernel_size=spacing, stride=spacing)
         self.stored_winner_info = None
 
         if self.use_cuda:
@@ -69,36 +77,49 @@ class ConvRBMLayer(nn.Module):
             torch.backends.cudnn.benchmark = True
 
     def sample_hidden(self, visible):
-        """Sample hidden units from visible units with MultinomialMaxPool2d"""
+        """Sample hidden units from visible units"""
         # Convolution
         hidden_pre = F.conv2d(visible, self.conv_weights, bias=self.hidden_bias,
-                             stride=self.stride, padding=self.padding)
+                              stride=self.stride, padding=self.padding)
 
         # Apply sigma scaling
         hidden_pre_scaled = hidden_pre / (self.sigma ** 2)
 
-        # MATLAB compatibility: Pass scaled values directly to pooling (no sigmoid)
-        # MATLAB's sample_multrand works in exp domain, not sigmoid domain
-        sparse_detection, pooled_map, winner_info = self.multinomial_pool(hidden_pre_scaled)
+        if self.pooling_type == 'rbm':
+            # Multinomial pooling (expects pre-activation values)
+            sparse_detection, pooled_map, winner_info = self.multinomial_pool(hidden_pre_scaled)
+        else:
+            # Apply activation then standard max pooling
+            if self.non_linear == 'sigmoid':
+                activation = torch.sigmoid(hidden_pre_scaled)
+            else:
+                activation = F.relu(hidden_pre_scaled)
+            pooled_map, winner_info = self.max_pool(activation)
+            sparse_detection = activation
 
         # Store winner info for reconstruction
         self.stored_winner_info = winner_info
 
-        # Return pooled map
         return pooled_map
 
     def sample_visible(self, hidden, output_size=None):
-        """Sample visible units from hidden units using sparse unpooling"""
-        # Sparse unpooling to restore detection map
-        sparse_detection = self.sparse_unpool(hidden, self.stored_winner_info)
+        """Sample visible units from hidden units"""
+        # Restore detection map based on pooling type
+        if self.pooling_type == 'rbm':
+            sparse_detection = self.sparse_unpool(hidden, self.stored_winner_info)
+        else:
+            sparse_detection = self.max_unpool(hidden, self.stored_winner_info)
 
         # Transpose convolution
         visible_recon = F.conv_transpose2d(sparse_detection, weight=self.conv_weights,
                                          bias=self.visible_bias, stride=self.stride, padding=self.padding)
 
-        # Apply sigma scaling
+        # Apply sigma scaling and activation
         visible_recon = visible_recon / (self.sigma ** 2)
-        visible_recon = torch.sigmoid(visible_recon)
+        if self.non_linear == 'sigmoid':
+            visible_recon = torch.sigmoid(visible_recon)
+        else:
+            visible_recon = F.relu(visible_recon)
 
         return visible_recon
 
@@ -136,13 +157,24 @@ class ConvRBMLayer(nn.Module):
 
         # Apply sigma scaling (following MATLAB implementation)
         conv_pos_scaled = conv_pos / (self.sigma ** 2)
-        conv_pos_sigmoid = torch.sigmoid(conv_pos_scaled)  # PRE-POOLING activations
+        if self.non_linear == 'sigmoid':
+            conv_pos_activation = torch.sigmoid(conv_pos_scaled)
+        else:
+            conv_pos_activation = F.relu(conv_pos_scaled)
+        conv_pos_sigmoid = conv_pos_activation  # alias for compatibility
 
-        # Multinomial pooling
-        sparse_pos, pooled_pos, winner_info_pos = self.multinomial_pool(conv_pos_sigmoid)
+        # Pooling step
+        if self.pooling_type == 'rbm':
+            sparse_pos, pooled_pos, winner_info_pos = self.multinomial_pool(conv_pos_activation)
+        else:
+            pooled_pos, winner_info_pos = self.max_pool(conv_pos_activation)
+            sparse_pos = conv_pos_activation
 
-        # Sample hidden states from pooled probabilities
-        pos_hidden_states = torch.bernoulli(pooled_pos)
+        # Sample hidden states
+        if self.non_linear == 'sigmoid':
+            pos_hidden_states = torch.bernoulli(pooled_pos)
+        else:
+            pos_hidden_states = (pooled_pos > 0).float()
 
         # === NEGATIVE PHASE (CD-k) ===
         neg_hidden_states = pos_hidden_states
@@ -155,16 +187,32 @@ class ConvRBMLayer(nn.Module):
             conv_neg = F.conv2d(neg_visible_probs, weight=self.conv_weights, bias=self.hidden_bias,
                                stride=self.stride, padding=self.padding)
             conv_neg_scaled = conv_neg / (self.sigma ** 2)
-            conv_neg_sigmoid = torch.sigmoid(conv_neg_scaled)
-            sparse_neg, pooled_neg, winner_info_neg = self.multinomial_pool(conv_neg_sigmoid)
-            neg_hidden_states = torch.bernoulli(pooled_neg)
+            if self.non_linear == 'sigmoid':
+                conv_neg_activation = torch.sigmoid(conv_neg_scaled)
+            else:
+                conv_neg_activation = F.relu(conv_neg_scaled)
+            conv_neg_sigmoid = conv_neg_activation  # alias for compatibility
+
+            if self.pooling_type == 'rbm':
+                sparse_neg, pooled_neg, winner_info_neg = self.multinomial_pool(conv_neg_activation)
+            else:
+                pooled_neg, winner_info_neg = self.max_pool(conv_neg_activation)
+                sparse_neg = conv_neg_activation
+
+            if self.non_linear == 'sigmoid':
+                neg_hidden_states = torch.bernoulli(pooled_neg)
+            else:
+                neg_hidden_states = (pooled_neg > 0).float()
 
         # Final negative phase activations
         neg_visible_probs = self.sample_visible(neg_hidden_states)
         conv_neg = F.conv2d(neg_visible_probs, weight=self.conv_weights, bias=self.hidden_bias,
                            stride=self.stride, padding=self.padding)
         conv_neg_scaled = conv_neg / (self.sigma ** 2)
-        conv_neg_sigmoid = torch.sigmoid(conv_neg_scaled)
+        if self.non_linear == 'sigmoid':
+            conv_neg_sigmoid = torch.sigmoid(conv_neg_scaled)
+        else:
+            conv_neg_sigmoid = F.relu(conv_neg_scaled)
 
         # === GRADIENT COMPUTATION ===
         with torch.no_grad():
@@ -243,8 +291,17 @@ class ConvRBMLayer(nn.Module):
             conv_out = F.conv2d(input_data, weight=self.conv_weights, bias=self.hidden_bias,
                                stride=self.stride, padding=self.padding)
             conv_out = conv_out / (self.sigma ** 2)  # Apply sigma scaling
-            conv_out = torch.sigmoid(conv_out)
-            sparse_detection, _, _ = self.multinomial_pool(conv_out)
+
+            if self.non_linear == 'sigmoid':
+                activation = torch.sigmoid(conv_out)
+            else:
+                activation = F.relu(conv_out)
+
+            if self.pooling_type == 'rbm':
+                sparse_detection, _, _ = self.multinomial_pool(activation)
+            else:
+                sparse_detection = activation
+
             return sparse_detection.view(sparse_detection.size(0), -1)
 
     def get_pooled_features(self, input_data):
@@ -259,7 +316,8 @@ class ConvDBN(nn.Module):
     def __init__(self, k=2, learning_rate=1e-3, momentum_coefficient=0.5,
                  weight_decay=1e-4, use_cuda=False, input_channels=1, input_dim=28,
                  dataset='mnist', num_layers=3, spacing=3, pbias=0.002, plambda=5.0,
-                 eta_sparsity=0.0, sigma=0.2, sigma_stop=0.1, sigma_schedule=True):
+                 eta_sparsity=0.0, sigma=0.2, sigma_stop=0.1, sigma_schedule=True,
+                 pooling_type='rbm', non_linear='sigmoid'):
         super(ConvDBN, self).__init__()
 
         self.use_cuda = use_cuda
@@ -269,6 +327,10 @@ class ConvDBN(nn.Module):
         self.input_dim = input_dim
         self.dataset = dataset
         self.num_layers = num_layers
+
+        # New control options for pooling and activation
+        self.pooling_type = pooling_type
+        self.non_linear = non_linear
 
         # Sparsity and sigma parameters (following MATLAB demo_cdbn.m)
         self.spacing = spacing
@@ -281,6 +343,10 @@ class ConvDBN(nn.Module):
 
         # Target feature dimensions: MNIST ~768, CIFAR10 ~3072
         target_features = 768 if dataset == 'mnist' else 3072
+
+        # Additional pooling helper lists (may be used in special 2-layer configs)
+        self.multinomial_pools = []
+        self.sparse_unpools = []
 
         # Configure network architecture based on dataset and number of layers
         self.layers = nn.ModuleList()
@@ -298,21 +364,60 @@ class ConvDBN(nn.Module):
             momentum_coefficient=momentum_coefficient, weight_decay=weight_decay, use_cuda=use_cuda,
             spacing=self.spacing, pbias=self.pbias, plambda=self.plambda,
             eta_sparsity=self.eta_sparsity, sigma=self.sigma, sigma_stop=self.sigma_stop,
-            sigma_schedule=self.sigma_schedule
+            sigma_schedule=self.sigma_schedule,
+            pooling_type=self.pooling_type, non_linear=self.non_linear
         )
 
     def _build_mnist_architecture(self, k, learning_rate, momentum_coefficient, weight_decay, use_cuda, target_features):
         """Build MNIST architecture, target feature dimensions close to 768 (MNIST baseline: 28×28=784), using stride=1"""
         if self.num_layers == 2:
-            # 2-layer: [1, 28, 28] -> [48, 24, 24] -> MaxPool(2x2) -> [48, 12, 12] -> [12, 8, 8] = 768 features ≈ 768*1.0
-            self.layers.append(self._create_layer(1, 48, 5, k, learning_rate, momentum_coefficient, weight_decay, use_cuda))
-            self.layers.append(self._create_layer(48, 12, 5, k, learning_rate, momentum_coefficient, weight_decay, use_cuda))
+            # 2-layer: Conv5x5 + MultinomialPool(2x2) + Conv5x5, 48×12×12 → 12×8×8 ≈ 768 features
+            #   Layer-1 uses spacing=2 (pool 2×2)
+            #   Layer-2 uses spacing=1 (effectively no pooling)
+            self.layers.append(ConvRBMLayer(
+                in_channels=1, out_channels=48, kernel_size=5, stride=1, padding=0,
+                k=k, learning_rate=learning_rate, momentum_coefficient=momentum_coefficient,
+                weight_decay=weight_decay, use_cuda=use_cuda,
+                spacing=2, pbias=self.pbias, plambda=self.plambda, eta_sparsity=self.eta_sparsity,
+                sigma=self.sigma, sigma_stop=self.sigma_stop, sigma_schedule=self.sigma_schedule,
+                pooling_type=self.pooling_type, non_linear=self.non_linear
+            ))
+            self.layers.append(ConvRBMLayer(
+                in_channels=48, out_channels=12, kernel_size=5, stride=1, padding=0,
+                k=k, learning_rate=learning_rate, momentum_coefficient=momentum_coefficient,
+                weight_decay=weight_decay, use_cuda=use_cuda,
+                spacing=1, pbias=self.pbias, plambda=self.plambda, eta_sparsity=self.eta_sparsity,
+                sigma=self.sigma, sigma_stop=self.sigma_stop, sigma_schedule=self.sigma_schedule,
+                pooling_type=self.pooling_type, non_linear=self.non_linear
+            ))
 
         elif self.num_layers == 3:
-            # 3-layer: [1, 28, 28] -> [16, 24, 24] -> [8, 20, 20] -> [3, 16, 16] = 768 features ≈ 768*1.0
-            self.layers.append(self._create_layer(1, 16, 5, k, learning_rate, momentum_coefficient, weight_decay, use_cuda))
-            self.layers.append(self._create_layer(16, 8, 5, k, learning_rate, momentum_coefficient, weight_decay, use_cuda))
-            self.layers.append(self._create_layer(8, 3, 5, k, learning_rate, momentum_coefficient, weight_decay, use_cuda))
+            # 3-layer, **no pooling** (spacing=1) to preserve spatial dims:
+            # [1,28,28] → Conv5 → [16,24,24] → Conv5 → [8,20,20] → Conv5 → [3,16,16] → 3×16×16=768
+            self.layers.append(ConvRBMLayer(
+                in_channels=1, out_channels=16, kernel_size=5, stride=1, padding=0,
+                k=k, learning_rate=learning_rate, momentum_coefficient=momentum_coefficient,
+                weight_decay=weight_decay, use_cuda=use_cuda,
+                spacing=1, pbias=self.pbias, plambda=self.plambda, eta_sparsity=self.eta_sparsity,
+                sigma=self.sigma, sigma_stop=self.sigma_stop, sigma_schedule=self.sigma_schedule,
+                pooling_type=self.pooling_type, non_linear=self.non_linear
+            ))
+            self.layers.append(ConvRBMLayer(
+                in_channels=16, out_channels=8, kernel_size=5, stride=1, padding=0,
+                k=k, learning_rate=learning_rate, momentum_coefficient=momentum_coefficient,
+                weight_decay=weight_decay, use_cuda=use_cuda,
+                spacing=1, pbias=self.pbias, plambda=self.plambda, eta_sparsity=self.eta_sparsity,
+                sigma=self.sigma, sigma_stop=self.sigma_stop, sigma_schedule=self.sigma_schedule,
+                pooling_type=self.pooling_type, non_linear=self.non_linear
+            ))
+            self.layers.append(ConvRBMLayer(
+                in_channels=8, out_channels=3, kernel_size=5, stride=1, padding=0,
+                k=k, learning_rate=learning_rate, momentum_coefficient=momentum_coefficient,
+                weight_decay=weight_decay, use_cuda=use_cuda,
+                spacing=1, pbias=self.pbias, plambda=self.plambda, eta_sparsity=self.eta_sparsity,
+                sigma=self.sigma, sigma_stop=self.sigma_stop, sigma_schedule=self.sigma_schedule,
+                pooling_type=self.pooling_type, non_linear=self.non_linear
+            ))
 
         elif self.num_layers == 4:
             # 4-layer: [1, 28, 28] -> [32, 24, 24] -> [20, 20, 20] -> [12, 16, 16] -> [6, 12, 12] = 864 features ≈ 768*1.125
@@ -509,7 +614,11 @@ class ConvDBN(nn.Module):
 
                 # Train current layer
                 error = self.layers[layer_idx].contrastive_divergence(layer_input)
-                epoch_error += error.item()
+                # error may already be a float
+                if isinstance(error, float):
+                    epoch_error += error
+                else:
+                    epoch_error += error.item()
                 batch_count += 1
 
             avg_error = epoch_error / max(1, batch_count)
