@@ -21,6 +21,10 @@ parser.add_argument('--batch-size', type=int, default=None,
                     help='Batch size for training (default: 100 for CPU, 200 for GPU)')
 parser.add_argument('--eval-train', action='store_true',
                     help='Also evaluate accuracy on training set to check for overfitting')
+parser.add_argument('--pooling-type', type=str, default='rbm', choices=['rbm', 'nn'],
+                    help='Pooling method: rbm (probabilistic) or nn (standard MaxPool)')
+parser.add_argument('--non-linear', type=str, default='sigmoid', choices=['sigmoid', 'relu'],
+                    help='Non-linear activation: sigmoid or relu')
 parser.add_argument('--profile', action='store_true',
                     help='Enable detailed performance profiling of training stages')
 args = parser.parse_args()
@@ -107,6 +111,8 @@ if DATASET == 'mnist':
         pbias=0.002,
         plambda=5.0,
         sigma=1.0,
+        pooling_type=args.pooling_type,
+        non_linear=args.non_linear,
     )
 elif DATASET == 'cifar10':
     # CIFAR-10 需要更温和的稀疏约束和更大的感受野
@@ -127,6 +133,8 @@ elif DATASET == 'cifar10':
         eta_sparsity=0.02,
 
         sigma=1.0,
+        pooling_type=args.pooling_type,
+        non_linear=args.non_linear,
     )
 else:
     raise ValueError(f'Unsupported dataset: {DATASET}')
